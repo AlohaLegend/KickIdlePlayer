@@ -1,12 +1,36 @@
-#More than [players] players, plugin will start kick the player
-  players: 8
-  #PLayer must afk more than [max-idle-time] secs, and him will can get kick
-  max-idle-time: 3600
-  #The server must low than this value and plugin will start kick player
-  kick-tps: 18.50
-  #The message for kick player
-  kick-message: "&cYour already 3600 secs no any actions, you was kicked from server cause server is busy."
-  #Kick afking player when server is full
-  kick-afking-players-when-server-is-full: true
-  #The message for kick player when full
-  kick-afking-full-message: "&cServer is full, you was kicked cause you are in AFK mode."
+# --------------------------------------------------
+# KickIdlePlayer Configuration
+# --------------------------------------------------
+
+# ==============================
+# FULL MODE (player count based)
+# ==============================
+# When online players >= [players], the server is treated as "full"
+# and AFK players will be kicked (longest AFK first, one at a time).
+players: 64
+
+# Enable or disable kicking when the server is "full"
+enable-full-mode: true
+
+# Message used when kicking due to full server
+kick-afking-full-message: "&cYou were kicked because the server is full and you are AFK."
+
+# ==============================
+# TPS MODE (performance based)
+# ==============================
+# When average TPS drops below [kick-tps], AFK players who have been
+# AFK longer than [max-idle-time] will be kicked.
+kick-tps: 10.0
+
+# Enable or disable TPS-based AFK kicking
+enable-tps-mode: true
+
+# Message used when kicking due to low TPS
+kick-message: "&cYou were kicked for being AFK while the server TPS is low."
+
+# ==============================
+# AFK TIME
+# ==============================
+# Player must be AFK for more than this many seconds before being kicked.
+# NOTE: This relies on EssentialsX AFK detection.
+max-idle-time: 600
