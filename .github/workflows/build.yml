@@ -3,9 +3,13 @@ name: Build
 on:
   push:
     branches:
+      - master
+      - main
       - modernize-1.21
   pull_request:
     branches:
+      - master
+      - main
       - modernize-1.21
   workflow_dispatch:
 
