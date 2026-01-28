@@ -4,6 +4,8 @@ import com.earth2me.essentials.Essentials;
 import com.earth2me.essentials.User;
 import org.bukkit.Bukkit;
 import org.bukkit.ChatColor;
+import org.bukkit.command.Command;
+import org.bukkit.command.CommandSender;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
@@ -20,19 +22,23 @@ public class Main extends JavaPlugin implements Listener {
     private int playerThreshold = 64;          // players (treat as "full threshold")
     private double tpsThreshold = 10.0;        // kick-tps
 
-    private String tpsKickMsg = "&cYou have been AFK for too long and the server is under load.";
-    private boolean kickWhenFull = true;       // kick-afking-players-when-server-is-full
-    private String fullKickMsg = "&cYou were kicked because the server is full and you are AFK.";
+    private boolean enableTpsMode = true;      // enable-tps-mode
+    private boolean enableFullMode = true;     // enable-full-mode
+
+    private String tpsKickMsg = "&cYou were kicked for being AFK while the server TPS is low.";
+    private String fullKickMsg = "&cYou were kicked for being AFK while the server is full.";
 
     private Essentials essentials;
 
     // Async pre-login sets this; main thread processes it
     private volatile boolean pendingFullKick = false;
 
+    // We keep one repeating task and never create duplicates
+    private BukkitRunnable tickTask;
+
     @Override
     public void onEnable() {
         saveDefaultConfig();
-        loadConfigValues();
 
         Plugin ess = Bukkit.getPluginManager().getPlugin("Essentials");
         if (!(ess instanceof Essentials)) {
@@ -44,52 +50,91 @@ public class Main extends JavaPlugin implements Listener {
 
         Bukkit.getPluginManager().registerEvents(this, this);
 
-        getLogger().info("KickIdlePlayer enabled. max-idle-time=" + maxIdleSeconds +
-                "s, players(threshold)=" + playerThreshold +
-                ", kick-tps=" + tpsThreshold +
-                ", kickWhenFull=" + kickWhenFull);
-
-        // Main loop: safe + simple
-        new BukkitRunnable() {
-            @Override
-            public void run() {
-                // FULL MODE: separate from TPS mode
-                if (kickWhenFull && (pendingFullKick || Bukkit.getOnlinePlayers().size() >= playerThreshold)) {
-                    boolean kicked = kickOneLongestAfk(fullKickMsg);
-                    pendingFullKick = false;
-
-                    // If nobody was AFK, nothing to do.
-                    if (kicked) {
-                        getLogger().info("Kicked AFK player to reduce player count pressure (full mode).");
-                    }
-                }
-
-                // TPS MODE: separate from full mode
-                double avgTps = essentials.getTimer().getAverageTPS();
-                if (avgTps < tpsThreshold) {
-                    int kickedCount = kickLongAfkWhenTpsLow();
-                    if (kickedCount > 0) {
-                        getLogger().info("Kicked " + kickedCount + " player(s) (TPS mode). avgTPS=" + avgTps);
-                    }
-                }
-            }
-        }.runTaskTimer(this, 0L, 80L); // every 4 seconds
+        reloadKickIdleConfig(true);
+        startOrRestartTask();
     }
 
-    private void loadConfigValues() {
+    @Override
+    public void onDisable() {
+        stopTask();
+    }
+
+    /**
+     * Safe reload from config.yml into memory.
+     * @param log whether to log the loaded settings
+     */
+    private void reloadKickIdleConfig(boolean log) {
+        reloadConfig();
+
         maxIdleSeconds = getConfig().getInt("max-idle-time", maxIdleSeconds);
         playerThreshold = getConfig().getInt("players", playerThreshold);
         tpsThreshold = getConfig().getDouble("kick-tps", tpsThreshold);
+
+        enableTpsMode = getConfig().getBoolean("enable-tps-mode", true);
+        enableFullMode = getConfig().getBoolean("enable-full-mode", true);
 
         tpsKickMsg = ChatColor.translateAlternateColorCodes('&',
                 getConfig().getString("kick-message", tpsKickMsg)
         );
 
-        kickWhenFull = getConfig().getBoolean("kick-afking-players-when-server-is-full", kickWhenFull);
-
         fullKickMsg = ChatColor.translateAlternateColorCodes('&',
                 getConfig().getString("kick-afking-full-message", fullKickMsg)
         );
+
+        if (log) {
+            getLogger().info("KickIdlePlayer settings loaded: " +
+                    "enableTpsMode=" + enableTpsMode +
+                    ", enableFullMode=" + enableFullMode +
+                    ", max-idle-time=" + maxIdleSeconds +
+                    "s, players(threshold)=" + playerThreshold +
+                    ", kick-tps=" + tpsThreshold);
+        }
+    }
+
+    private void startOrRestartTask() {
+        stopTask();
+
+        tickTask = new BukkitRunnable() {
+            @Override
+            public void run() {
+                // FULL MODE: separate from TPS mode
+                if (enableFullMode && Bukkit.getOnlinePlayers().size() >= playerThreshold) {
+                    boolean kicked = kickOneLongestAfk(fullKickMsg);
+                    if (kicked) {
+                        getLogger().info("Kicked AFK player (full mode).");
+                    }
+                }
+
+                // FULL MODE: respond to async prelogin flag (still separate from TPS)
+                if (enableFullMode && pendingFullKick) {
+                    boolean kicked = kickOneLongestAfk(fullKickMsg);
+                    pendingFullKick = false;
+                    if (kicked) {
+                        getLogger().info("Freed a slot by kicking AFK player (full mode / prelogin).");
+                    }
+                }
+
+                // TPS MODE: separate from full mode
+                if (enableTpsMode) {
+                    double avgTps = essentials.getTimer().getAverageTPS();
+                    if (avgTps < tpsThreshold) {
+                        int kickedCount = kickLongAfkWhenTpsLow();
+                        if (kickedCount > 0) {
+                            getLogger().info("Kicked " + kickedCount + " player(s) (TPS mode). avgTPS=" + avgTps);
+                        }
+                    }
+                }
+            }
+        };
+
+        tickTask.runTaskTimer(this, 0L, 80L); // every 4 seconds
+    }
+
+    private void stopTask() {
+        if (tickTask != null) {
+            tickTask.cancel();
+            tickTask = null;
+        }
     }
 
     /**
@@ -132,6 +177,7 @@ public class Main extends JavaPlugin implements Listener {
             long afkSince = user.getAfkSince();
             if (afkSince <= 0) continue;
 
+            // Smaller timestamp = earlier = longer AFK
             if (afkSince < oldestAfkSince) {
                 oldestAfkSince = afkSince;
                 target = user;
@@ -147,8 +193,8 @@ public class Main extends JavaPlugin implements Listener {
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onJoin(PlayerJoinEvent e) {
-        // FULL MODE quick reaction on join (still separate from TPS mode)
-        if (kickWhenFull && Bukkit.getOnlinePlayers().size() >= playerThreshold) {
+        // Quick reaction on join for FULL mode only (never checks TPS here)
+        if (enableFullMode && Bukkit.getOnlinePlayers().size() >= playerThreshold) {
             kickOneLongestAfk(fullKickMsg);
         }
     }
@@ -156,10 +202,30 @@ public class Main extends JavaPlugin implements Listener {
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onPreLogin(AsyncPlayerPreLoginEvent e) {
         // Async: don't kick here. Just flag for main thread.
-        if (kickWhenFull && Bukkit.getOnlinePlayers().size() >= playerThreshold) {
+        if (enableFullMode && Bukkit.getOnlinePlayers().size() >= playerThreshold) {
             pendingFullKick = true;
             // Allow them to attempt join; we will free a slot ASAP on main thread.
             e.setLoginResult(AsyncPlayerPreLoginEvent.Result.ALLOWED);
         }
+    }
+
+    // /kickidle reload
+    @Override
+    public boolean onCommand(CommandSender sender, Command command, String label, String[] args) {
+        if (!command.getName().equalsIgnoreCase("kickidle")) return false;
+
+        if (args.length == 1 && args[0].equalsIgnoreCase("reload")) {
+            if (!sender.hasPermission("kickidle.reload")) {
+                sender.sendMessage(ChatColor.RED + "No permission.");
+                return true;
+            }
+            reloadKickIdleConfig(false);
+            startOrRestartTask();
+            sender.sendMessage(ChatColor.GREEN + "KickIdlePlayer reloaded.");
+            return true;
+        }
+
+        sender.sendMessage(ChatColor.YELLOW + "Usage: /kickidle reload");
+        return true;
     }
 }
