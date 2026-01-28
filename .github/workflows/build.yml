@@ -15,15 +15,26 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Show branch + commit
+        run: echo "REF_NAME=${GITHUB_REF_NAME}  SHA=${GITHUB_SHA}"
+
+      - name: List pom files
+        run: find . -name pom.xml -print
+
+      - name: Print pom.xml
+        run: sed -n '1,260p' pom.xml
+
+      - name: Show effective POM (dependency truth)
+        run: mvn -q -DskipTests help:effective-pom -Doutput=effective-pom.xml
+
+      - name: Search effective POM for Paper deps
+        run: grep -nE "io\.papermc|paperlib|paper-api" effective-pom.xml || true
+
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "21"
           cache: maven
 
-      - run: mvn -B clean package
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: KickIdlePlayer
-          path: target/*.jar
+      - name: Build with Maven
+        run: mvn -B clean package
