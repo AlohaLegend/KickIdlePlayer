@@ -26,7 +26,6 @@ public class Main extends JavaPlugin implements Listener {
     private boolean kickFull = true;
     private String kickFullMsg = "&cYou were kicked because the server is full and you are AFK.";
 
-    // Set to true when we detect a login being blocked by "server full" and we want to free a slot.
     private volatile boolean pendingKickForFull = false;
 
     @Override
@@ -57,24 +56,24 @@ public class Main extends JavaPlugin implements Listener {
         Bukkit.getPluginManager().registerEvents(this, this);
 
         getLogger().info("KickIdlePlayer enabled. max-idle-time=" + maxIdleSeconds +
-                "s, players=" + playersThreshold + ", kick-tps=" + kickTps +
+                "s, players(threshold)=" + playersThreshold + ", kick-tps=" + kickTps +
                 ", kickFull=" + kickFull);
 
-        // Run sync. Safe + simple.
         new BukkitRunnable() {
             @Override
             public void run() {
-                // If we flagged a "server full" situation, try to free a slot first.
+
+                // Handle "full" condition using CONFIG value instead of server max
                 if (pendingKickForFull) {
                     if (tryKickOneAfk(kickFullMsg)) {
-                        getLogger().info("Freed a slot by kicking an AFK player (server full).");
+                        getLogger().info("Freed a slot by kicking an AFK player (config full).");
                     }
                     pendingKickForFull = false;
                 }
 
-                // Normal TPS-based kicking
-                if (kickFull && Bukkit.getOnlinePlayers().size() <= playersThreshold) {
-                    return; // Not enough players to start kicking (unless server-full logic triggered)
+                // TPS-based kicking
+                if (kickFull && Bukkit.getOnlinePlayers().size() < playersThreshold) {
+                    return; // not enough players to start kicking
                 }
                 if (essentials.getTimer().getAverageTPS() >= kickTps) {
                     return; // TPS is fine
@@ -116,8 +115,7 @@ public class Main extends JavaPlugin implements Listener {
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onJoin(PlayerJoinEvent e) {
-        // If server is under load right now, immediately check for long-AFK players.
-        if (kickFull && Bukkit.getOnlinePlayers().size() <= playersThreshold) {
+        if (Bukkit.getOnlinePlayers().size() < playersThreshold) {
             return;
         }
         if (essentials.getTimer().getAverageTPS() >= kickTps) {
@@ -128,11 +126,9 @@ public class Main extends JavaPlugin implements Listener {
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onPreLogin(AsyncPlayerPreLoginEvent e) {
-        // This event is async — do NOT kick here.
-        // If the login is being rejected because the server is full, set a flag so the next sync tick frees a slot.
-        if (e.getLoginResult() == AsyncPlayerPreLoginEvent.Result.KICK_FULL && kickFull) {
+        // Treat CONFIG "players" as the max for testing/full logic
+        if (kickFull && Bukkit.getOnlinePlayers().size() >= playersThreshold) {
             pendingKickForFull = true;
-            // Let them try to join. The slot will be freed on the main thread ASAP.
             e.setLoginResult(AsyncPlayerPreLoginEvent.Result.ALLOWED);
         }
     }
