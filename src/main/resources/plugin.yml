@@ -4,3 +4,13 @@ api-version: "1.21"
 main: com.mcsunnyside.KickIdlePlayer.Main
 depend:
   - Essentials
+
+commands:
+  kickidle:
+    description: KickIdlePlayer admin commands
+    usage: "/kickidle reload"
+
+permissions:
+  kickidle.reload:
+    description: Allows reloading KickIdlePlayer config
+    default: op
