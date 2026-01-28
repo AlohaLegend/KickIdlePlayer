@@ -15,33 +15,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Debug: show ref + pom + search for Paper
-        shell: bash
-        run: |
-          echo "REF_NAME=${GITHUB_REF_NAME}"
-          echo "SHA=${GITHUB_SHA}"
-          echo "---- repo root ----"
-          pwd
-          ls -la
-          echo "---- pom.xml (first 220 lines) ----"
-          sed -n '1,220p' pom.xml
-          echo "---- find ALL pom.xml files ----"
-          find . -name pom.xml -print
-          echo "---- search for papermc deps ----"
-          grep -RIn -e paperlib -e "io.papermc" -e "paper-api" . || true
-
-      - name: Set up Java
-        uses: actions/setup-java@v4
+      - uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "21"
           cache: maven
 
-      - name: Build with Maven
-        run: mvn -B clean package
+      - run: mvn -B clean package
 
-      - name: Upload jar
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
           name: KickIdlePlayer
           path: target/*.jar
