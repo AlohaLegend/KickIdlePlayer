@@ -2,24 +2,31 @@ package com.mcsunnyside.KickIdlePlayer;
 
 import com.earth2me.essentials.Essentials;
 import com.earth2me.essentials.User;
+import net.ess3.api.events.AfkStatusChangeEvent;
 import org.bukkit.Bukkit;
 import org.bukkit.ChatColor;
 import org.bukkit.command.Command;
 import org.bukkit.command.CommandSender;
+import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
 import org.bukkit.event.player.AsyncPlayerPreLoginEvent;
 import org.bukkit.event.player.PlayerJoinEvent;
+import org.bukkit.event.player.PlayerQuitEvent;
 import org.bukkit.plugin.Plugin;
 import org.bukkit.plugin.java.JavaPlugin;
 import org.bukkit.scheduler.BukkitRunnable;
 
+import java.util.Map;
+import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
+
 public class Main extends JavaPlugin implements Listener {
 
     // Config
-    private int maxIdleSeconds = 600;          // max-idle-time
-    private int playerThreshold = 64;          // players (treat as "full threshold")
+    private int maxIdleSeconds = 600;          // max-idle-time (seconds AFTER Essentials marks AFK)
+    private int playerThreshold = 64;          // players (full threshold)
     private double tpsThreshold = 10.0;        // kick-tps
 
     private boolean enableTpsMode = true;      // enable-tps-mode
@@ -33,8 +40,11 @@ public class Main extends JavaPlugin implements Listener {
     // Async pre-login sets this; main thread processes it
     private volatile boolean pendingFullKick = false;
 
-    // We keep one repeating task and never create duplicates
+    // Single repeating task (no duplicates)
     private BukkitRunnable tickTask;
+
+    // AFK timing we control (AFK start timestamp in millis)
+    private final Map<UUID, Long> afkStartMs = new ConcurrentHashMap<>();
 
     @Override
     public void onEnable() {
@@ -50,6 +60,13 @@ public class Main extends JavaPlugin implements Listener {
 
         Bukkit.getPluginManager().registerEvents(this, this);
 
+        // Seed AFK map for anyone already AFK at startup (rare but safe)
+        essentials.getOnlineUsers().forEach(u -> {
+            if (u.isAfk()) {
+                afkStartMs.put(u.getUUID(), System.currentTimeMillis());
+            }
+        });
+
         reloadKickIdleConfig(true);
         startOrRestartTask();
     }
@@ -57,12 +74,9 @@ public class Main extends JavaPlugin implements Listener {
     @Override
     public void onDisable() {
         stopTask();
+        afkStartMs.clear();
     }
 
-    /**
-     * Safe reload from config.yml into memory.
-     * @param log whether to log the loaded settings
-     */
     private void reloadKickIdleConfig(boolean log) {
         reloadConfig();
 
@@ -97,31 +111,22 @@ public class Main extends JavaPlugin implements Listener {
         tickTask = new BukkitRunnable() {
             @Override
             public void run() {
-                // FULL MODE: separate from TPS mode
+                // FULL MODE: purely player-count based (no TPS checks)
                 if (enableFullMode && Bukkit.getOnlinePlayers().size() >= playerThreshold) {
-                    boolean kicked = kickOneLongestAfk(fullKickMsg);
-                    if (kicked) {
-                        getLogger().info("Kicked AFK player (full mode).");
-                    }
+                    kickOneLongestAfk(fullKickMsg);
                 }
 
-                // FULL MODE: respond to async prelogin flag (still separate from TPS)
+                // FULL MODE: async prelogin signal (still independent of TPS)
                 if (enableFullMode && pendingFullKick) {
-                    boolean kicked = kickOneLongestAfk(fullKickMsg);
+                    kickOneLongestAfk(fullKickMsg);
                     pendingFullKick = false;
-                    if (kicked) {
-                        getLogger().info("Freed a slot by kicking AFK player (full mode / prelogin).");
-                    }
                 }
 
-                // TPS MODE: separate from full mode
+                // TPS MODE: purely TPS based (no player-count checks)
                 if (enableTpsMode) {
                     double avgTps = essentials.getTimer().getAverageTPS();
                     if (avgTps < tpsThreshold) {
-                        int kickedCount = kickLongAfkWhenTpsLow();
-                        if (kickedCount > 0) {
-                            getLogger().info("Kicked " + kickedCount + " player(s) (TPS mode). avgTPS=" + avgTps);
-                        }
+                        kickLongAfkWhenTpsLow();
                     }
                 }
             }
@@ -139,47 +144,46 @@ public class Main extends JavaPlugin implements Listener {
 
     /**
      * TPS MODE:
-     * Kick any player who is AFK and AFK duration > maxIdleSeconds.
-     * Returns number kicked.
+     * Kick any player whose AFK duration (tracked by AfkStatusChangeEvent) exceeds maxIdleSeconds.
      */
-    private int kickLongAfkWhenTpsLow() {
+    private void kickLongAfkWhenTpsLow() {
         long now = System.currentTimeMillis();
         long maxAllowIdleMs = (long) maxIdleSeconds * 1000L;
 
-        int kicked = 0;
         for (User user : essentials.getOnlineUsers()) {
             if (!user.isAfk()) continue;
 
-            long afkSince = user.getAfkSince();
-            if (afkSince <= 0) continue;
+            Long start = afkStartMs.get(user.getUUID());
+            if (start == null) {
+                // Fallback: if we somehow missed the event, start the clock now (prevents instant kicks)
+                afkStartMs.put(user.getUUID(), now);
+                continue;
+            }
 
-            if ((now - afkSince) > maxAllowIdleMs) {
+            if ((now - start) > maxAllowIdleMs) {
                 getLogger().info("Kicking " + user.getName() + " (TPS mode: AFK too long).");
                 user.getBase().kickPlayer(tpsKickMsg);
-                kicked++;
+                afkStartMs.remove(user.getUUID());
             }
         }
-        return kicked;
     }
 
     /**
      * FULL MODE:
-     * Kick ONE AFK player (the one AFK the longest).
-     * Returns true if a kick occurred.
+     * Kick ONE AFK player, chosen as the longest AFK using our tracked start time.
      */
     private boolean kickOneLongestAfk(String message) {
         User target = null;
-        long oldestAfkSince = Long.MAX_VALUE;
+        long oldestStart = Long.MAX_VALUE;
 
         for (User user : essentials.getOnlineUsers()) {
             if (!user.isAfk()) continue;
 
-            long afkSince = user.getAfkSince();
-            if (afkSince <= 0) continue;
+            Long start = afkStartMs.get(user.getUUID());
+            if (start == null) continue; // if unknown, don't pick them (safer)
 
-            // Smaller timestamp = earlier = longer AFK
-            if (afkSince < oldestAfkSince) {
-                oldestAfkSince = afkSince;
+            if (start < oldestStart) {
+                oldestStart = start;
                 target = user;
             }
         }
@@ -188,23 +192,42 @@ public class Main extends JavaPlugin implements Listener {
 
         getLogger().info("Kicking " + target.getName() + " (full mode: longest AFK).");
         target.getBase().kickPlayer(message);
+        afkStartMs.remove(target.getUUID());
         return true;
+    }
+
+    // Essentials AFK status change: this is the "true" AFK start/stop moment.
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    public void onAfkChange(AfkStatusChangeEvent e) {
+        UUID uuid = e.getAffected().getUUID();
+        boolean nowAfk = e.getValue(); // true = now AFK, false = no longer AFK :contentReference[oaicite:2]{index=2}
+
+        if (nowAfk) {
+            afkStartMs.put(uuid, System.currentTimeMillis());
+        } else {
+            afkStartMs.remove(uuid);
+        }
+    }
+
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    public void onQuit(PlayerQuitEvent e) {
+        afkStartMs.remove(e.getPlayer().getUniqueId());
     }
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onJoin(PlayerJoinEvent e) {
-        // Quick reaction on join for FULL mode only (never checks TPS here)
-        if (enableFullMode && Bukkit.getOnlinePlayers().size() >= playerThreshold) {
-            kickOneLongestAfk(fullKickMsg);
+        // If they join already AFK (unlikely), start clock now
+        Player p = e.getPlayer();
+        User u = essentials.getUser(p);
+        if (u != null && u.isAfk()) {
+            afkStartMs.put(p.getUniqueId(), System.currentTimeMillis());
         }
     }
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onPreLogin(AsyncPlayerPreLoginEvent e) {
-        // Async: don't kick here. Just flag for main thread.
         if (enableFullMode && Bukkit.getOnlinePlayers().size() >= playerThreshold) {
             pendingFullKick = true;
-            // Allow them to attempt join; we will free a slot ASAP on main thread.
             e.setLoginResult(AsyncPlayerPreLoginEvent.Result.ALLOWED);
         }
     }
