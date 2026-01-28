@@ -111,15 +111,15 @@ public class Main extends JavaPlugin implements Listener {
         tickTask = new BukkitRunnable() {
             @Override
             public void run() {
-                // FULL MODE: purely player-count based (no TPS checks)
-                if (enableFullMode && Bukkit.getOnlinePlayers().size() >= playerThreshold) {
-                    kickOneLongestAfk(fullKickMsg);
-                }
+                // FULL MODE: at most ONE kick per tick, triggered by:
+                // - online >= threshold, OR
+                // - prelogin flagged KICK_FULL
+                boolean shouldFullKick = enableFullMode
+                        && (Bukkit.getOnlinePlayers().size() >= playerThreshold || pendingFullKick);
 
-                // FULL MODE: async prelogin signal (still independent of TPS)
-                if (enableFullMode && pendingFullKick) {
+                if (shouldFullKick) {
                     kickOneLongestAfk(fullKickMsg);
-                    pendingFullKick = false;
+                    pendingFullKick = false; // clear after we attempted a kick
                 }
 
                 // TPS MODE: purely TPS based (no player-count checks)
@@ -200,7 +200,7 @@ public class Main extends JavaPlugin implements Listener {
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onAfkChange(AfkStatusChangeEvent e) {
         UUID uuid = e.getAffected().getUUID();
-        boolean nowAfk = e.getValue(); // true = now AFK, false = no longer AFK :contentReference[oaicite:2]{index=2}
+        boolean nowAfk = e.getValue(); // true = now AFK, false = no longer AFK
 
         if (nowAfk) {
             afkStartMs.put(uuid, System.currentTimeMillis());
@@ -226,8 +226,12 @@ public class Main extends JavaPlugin implements Listener {
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onPreLogin(AsyncPlayerPreLoginEvent e) {
-        if (enableFullMode && Bukkit.getOnlinePlayers().size() >= playerThreshold) {
+        if (!enableFullMode) return;
+
+        // Only intervene when the server is *actually* full.
+        if (e.getLoginResult() == AsyncPlayerPreLoginEvent.Result.KICK_FULL) {
             pendingFullKick = true;
+            // Optimistically allow login; main thread will try to free a slot ASAP.
             e.setLoginResult(AsyncPlayerPreLoginEvent.Result.ALLOWED);
         }
     }
