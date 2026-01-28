@@ -2,14 +2,30 @@ name: Build
 
 on:
   push:
-    branches: [ "master", "modernize-1.21" ]
+    branches: [ "modernize-1.21" ]
   pull_request:
+    branches: [ "modernize-1.21" ]
+  workflow_dispatch:
 
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      - name: Debug: show ref + pom + Paper references
+        run: |
+          echo "REF_NAME=$GITHUB_REF_NAME"
+          echo "SHA=$GITHUB_SHA"
+          echo "---- repo root ----"
+          pwd
+          ls -la
+          echo "---- pom.xml (first 220 lines) ----"
+          sed -n '1,220p' pom.xml
+          echo "---- find ALL pom.xml files ----"
+          find . -name "pom.xml" -print
+          echo "---- search for papermc deps ----"
+          grep -RIn "paperlib\|io\.papermc\|paper-api" . || true
 
       - name: Set up Java
         uses: actions/setup-java@v4
