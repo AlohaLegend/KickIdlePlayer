@@ -2,13 +2,20 @@ name: KickIdlePlayer
 version: 1.9
 api-version: "1.21"
 main: com.mcsunnyside.KickIdlePlayer.Main
+description: Kicks AFK players when TPS is low or the server hits a player threshold.
+authors:
+  - AlohaLegend
+  - Ghost-chu
 depend:
   - Essentials
+load: POSTWORLD
 
 commands:
   kickidle:
     description: KickIdlePlayer admin commands
     usage: "/kickidle reload"
+    permission: kickidle.reload
+    permission-message: "You do not have permission to do that."
 
 permissions:
   kickidle.reload:
