@@ -24,17 +24,32 @@ jobs:
       - name: Print pom.xml
         run: sed -n '1,260p' pom.xml
 
-      - name: Show effective POM (dependency truth)
-        run: mvn -q -DskipTests help:effective-pom -Doutput=effective-pom.xml
-
-      - name: Search effective POM for Paper deps
-        run: grep -nE "io\.papermc|paperlib|paper-api" effective-pom.xml || true
-
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "21"
           cache: maven
 
+      - name: Generate effective POM
+        run: mvn -B -DskipTests help:effective-pom -Doutput=effective-pom.xml
+
+      - name: Show effective POM file
+        run: ls -lah effective-pom.xml
+
+      - name: Grep effective POM for Paper deps
+        run: grep -nE "io\.papermc|paperlib|paper-api" effective-pom.xml || true
+
+      - name: Print start of effective POM
+        run: sed -n '1,80p' effective-pom.xml
+
+      - name: Show dependency tree (Paper lines)
+        run: mvn -B -DskipTests dependency:tree | grep -E "io\.papermc|paperlib|paper-api|paper-api" || true
+
       - name: Build with Maven
         run: mvn -B clean package
+
+      - name: Upload jar
+        uses: actions/upload-artifact@v4
+        with:
+          name: KickIdlePlayer
+          path: target/*.jar
